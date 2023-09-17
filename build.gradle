@@ -1,0 +1,341 @@
+import io.gitlab.arturbosch.detekt.Detekt
+
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
+
+buildscript {
+    repositories {
+        gradlePluginPortal()
+    }
+    dependencies {
+        classpath 'com.google.protobuf:protobuf-gradle-plugin:0.9.1'
+    }
+}
+
+plugins {
+    id 'java'
+    id 'groovy'
+    id 'idea'
+    id 'application'
+    id 'jacoco'
+
+    alias(libs.plugins.kotlin)
+    alias(libs.plugins.jib)
+    alias(libs.plugins.spring)
+    alias(libs.plugins.git)
+    alias(libs.plugins.protobuf)
+    alias(libs.plugins.ktlint)
+    alias(libs.plugins.detekt)
+}
+
+
+group = 'io.emeraldpay.dshackle'
+
+version = getVersion()
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven { url "https://repo.spring.io/snapshot" }
+    maven { url "https://repo.spring.io/milestone" }
+    maven { url "https://maven.emrld.io" }
+}
+
+configurations {
+    compile.exclude group: "commons-logging"
+    compile.exclude group: "ch.qos.logback"
+    compile.exclude group: "org.slf4j", module: "slf4j-jdk14"
+    compile.exclude group: "org.slf4j", module: "log4j-over-slf4j"
+    // should be used only for generation of the stubs, the lib contains grpc classes
+    compile.exclude group: "com.salesforce.servicelibs", module: "reactor-grpc"
+
+}
+
+dependencies {
+    implementation libs.bundles.kotlin
+
+    implementation libs.bundles.grpc
+    implementation libs.bundles.netty
+    implementation libs.zeromq
+    implementation(libs.bundles.spring.framework)
+
+    implementation libs.bundles.reactor
+
+    implementation(libs.reactor.grpc.stub)
+    implementation(libs.grpc.proto.util)
+
+    implementation libs.micrometer.registry.prometheus
+    implementation libs.lettuce.core
+
+    implementation(libs.spring.cloud.starter.sleuth) {
+        exclude module: 'spring-security-rsa'
+    }
+    implementation libs.brave.instrumentation.grpc
+
+    implementation libs.bundles.etherjar
+
+    implementation libs.logstash.encoder
+
+    implementation libs.janino
+
+    implementation libs.spring.cloud.sleuth.zipkin
+
+    implementation libs.bitcoinj
+
+    implementation libs.snake.yaml
+    implementation libs.bundles.httpcomponents
+    implementation libs.bundles.jackson
+
+    implementation libs.bundles.apache.commons
+    implementation libs.bundles.bouncycastle
+    implementation libs.caffeine
+    implementation libs.javax.annotations
+
+    implementation libs.auth0.jwt
+
+    testImplementation libs.cglib.nodep
+    testImplementation libs.spockframework.core
+    testImplementation libs.grpc.testing
+    testImplementation libs.reactor.test
+    testImplementation libs.objgenesis
+    testImplementation libs.mockserver.netty
+    testImplementation libs.java.websocket
+    testImplementation libs.equals.verifier
+    testImplementation libs.groovy
+    testImplementation libs.bundles.testcontainers
+    testImplementation libs.bundles.junit
+    testImplementation libs.mockito.inline
+    testImplementation libs.mockito.kotlin
+
+    testImplementation(libs.spring.boot.starter.test) {
+        exclude module: 'spring-boot-starter-logging'
+    }
+    testImplementation libs.grpc.testing
+
+    detektPlugins libs.detekt.formatting
+
+    implementation(variantOf(libs.netty.tcnative.boringssl) { classifier("osx-aarch_64") })
+    implementation(variantOf(libs.netty.tcnative.boringssl) { classifier("linux-x86_64") })
+    implementation(variantOf(libs.netty.tcnative.boringssl) { classifier("osx-x86_64") })
+}
+
+compileKotlin {
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+compileTestKotlin {
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+}
+
+test {
+    jvmArgs '-ea'
+    testLogging.showStandardStreams = false
+    testLogging.exceptionFormat = 'full'
+    finalizedBy jacocoTestReport
+    useJUnitPlatform()
+
+    // getting on CI:
+    //   java.security.KeyStoreException: Key protection algorithm not found: java.security.UnrecoverableKeyException: Encrypt Private Key failed: unrecognized algorithm name: PBEWithSHA1AndDESede
+    //            at java.base/sun.security.pkcs12.PKCS12KeyStore.setKeyEntry(PKCS12KeyStore.java:700)
+    //            at java.base/sun.security.pkcs12.PKCS12KeyStore.engineSetKeyEntry(PKCS12KeyStore.java:597)
+    //            at java.base/sun.security.util.KeyStoreDelegator.engineSetKeyEntry(KeyStoreDelegator.java:111)
+    //            at java.base/java.security.KeyStore.setKeyEntry(KeyStore.java:1167)
+    //            at io.netty.handler.ssl.SslContext.buildKeyStore(SslContext.java:1102)
+    //            at io.netty.handler.ssl.ReferenceCountedOpenSslServerContext.newSessionContext(ReferenceCountedOpenSslServerContext.java:123)
+    // ----
+    // see
+    // https://github.com/bcgit/bc-java/issues/941
+    // https://bugs.openjdk.java.net/browse/JDK-8266279
+    //
+    systemProperty "keystore.pkcs12.keyProtectionAlgorithm", "PBEWithHmacSHA256AndAES_256"
+}
+
+application {
+    getMainClass().set('io.emeraldpay.dshackle.StarterKt')
+}
+
+jib {
+    from {
+        image = 'openjdk:17'
+    }
+    to {
+        // by default publish as:
+        //  dshackle:shapshot,
+        //  dshackle:t<yyyyMMddHHmm>,
+        //  dshackle:<versionFull>
+        //  dshackle:latest
+        image = [
+                project.hasProperty('docker') ? project.property('docker') : 'emeraldpay',
+                '/dshackle:',
+                'snapshot'
+        ].join('')
+        tags = [project.version].with(true) {
+            add "t" + DateTimeFormatter.ofPattern("yyyyMMddHHmm").withZone(ZoneId.of('UTC')).format(Instant.now())
+            add "latest"
+        }
+        auth {
+            username = System.getenv('DOCKERHUB_USERNAME') ?: ''
+            password = System.getenv('DOCKERHUB_TOKEN') ?: ''
+        }
+    }
+    container {
+        jvmFlags = ['-XX:+UseG1GC', '-XX:+ExitOnOutOfMemoryError', '-Xms1024M', '-XX:+UnlockDiagnosticVMOptions', '-XX:GCLockerRetryAllocationCount=10']
+        mainClass = 'io.emeraldpay.dshackle.StarterKt'
+        args = []
+        ports = ['2448', '2449', '8545']
+    }
+}
+
+jar {
+    enabled = true
+}
+
+afterEvaluate {
+    distZip.dependsOn(jar)
+    compileKotlin.dependsOn(generateVersion)
+    jar.dependsOn(generateVersion)
+}
+
+protobuf {
+    protoc {
+        // if $PROTOC_PATH is set then locally installed protoc is used otherwise it is downloaded remotely
+        path = System.getenv("PROTOC_PATH") ?: null
+        artifact = System.getenv("PROTOC_PATH") == null ? "com.google.protobuf:protoc:${libs.versions.protoc.get()}" : null
+    }
+    plugins {
+        grpc {
+            artifact = "io.grpc:protoc-gen-grpc-java:${grpcVersion}"
+        }
+        reactor {  artifact = "com.salesforce.servicelibs:reactor-grpc:${reactiveGrpcVersion}" }
+    }
+    generateProtoTasks {
+        all()*.plugins {
+            grpc {}
+            reactor {}
+        }
+    }
+}
+
+sourceSets {
+    main {
+        resources.srcDirs += project.buildDir.absolutePath + "/generated/version"
+
+        proto {
+            srcDir 'emerald-grpc/proto'
+        }
+    }
+}
+
+task generateVersion() {
+    group = 'Build'
+    description = 'Generate project version'
+
+    doLast {
+        def version = versionDetails()
+        def resourcesDir = new File(project.buildDir.absolutePath + "/generated/version")
+        resourcesDir.mkdirs()
+        new File(resourcesDir, "version.properties").text = [
+                "# AUTOMATICALLY GENERATED",
+                "version.app=$project.version",
+                "version.commit=${version.gitHash}",
+                "version.tag=${version.lastTag}",
+                "version.date=${DateTimeFormatter.ISO_LOCAL_DATE_TIME.withZone(ZoneId.of('UTC')).format(Instant.now().truncatedTo(ChronoUnit.SECONDS))} UTC"
+        ].join("\n")
+    }
+}
+
+// Show the list of failed tests and output only for them, helpful for CI
+ext.failedTests = []
+tasks.withType(Test) {
+    def stdout = new LinkedList<String>()
+    beforeTest { TestDescriptor td ->
+        stdout.clear()
+    }
+    onOutput { TestDescriptor td, TestOutputEvent toe ->
+        stdout.addAll(toe.getMessage().split('(?m)$'))
+        while (stdout.size() > 100) {
+            stdout.remove()
+        }
+    }
+    afterTest { TestDescriptor descriptor, TestResult result ->
+        if (result.resultType == org.gradle.api.tasks.testing.TestResult.ResultType.FAILURE) {
+            failedTests << "${descriptor.className} > ${descriptor.name}"
+            if (!stdout.isEmpty()) {
+                println("-------- ${descriptor.className} > ${descriptor.name} OUTPUT ".padRight(120, "-"))
+                stdout.each { print(it) }
+                println("================".padRight(120, "="))
+            }
+        }
+    }
+}
+gradle.buildFinished {
+    if (!failedTests.empty) {
+        println "Failed tests for ${project.name}:"
+        failedTests.each { failedTest ->
+            println failedTest
+        }
+        println ""
+    }
+}
+
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required.set true
+        html.required.set true
+    }
+    afterEvaluate {
+        classDirectories.setFrom(files(classDirectories.files.collect {
+            fileTree(dir: it, exclude: 'io/emeraldpay/dshackle/proto/**')
+        }))
+    }
+}
+jacoco {
+    toolVersion = "0.8.7"
+}
+
+detekt {
+    toolVersion = "1.22.0"
+    parallel = false
+    basePath = projectDir
+    debug = false
+    ignoreFailures = true
+}
+
+tasks.withType(Detekt).configureEach {
+    reports {
+        xml.outputLocation.set(file("build/reports/detekt/detekt.xml"))
+        html.outputLocation.set(file("build/reports/detekt/detekt.html"))
+    }
+    jvmTarget = "17"
+}
+
+static def getVersion() {
+    def exactVersion = 'git describe --tags --exact-match'.execute().text.trim()
+    def result = ""
+    if (exactVersion) {
+        result = exactVersion
+    } else {
+        def tag = 'git describe --tags --abbrev=0'.execute().text.trim()
+        if (!tag) {
+            throw new GradleException("No tags found")
+        }
+        def m = tag =~ /\.(\d+)$/
+        def match = m[0][1]
+        def next = match.toInteger() + 1
+        tag = tag.replaceAll(/.\d+$/, "." + next.toString())
+        result = tag + '-SNAPSHOT'
+    }
+
+    return result.replaceAll(/^v/, '')
+}

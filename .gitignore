@@ -1,0 +1,23 @@
+.gradle/
+build/
+out/
+./dshackle.yaml
+./upstream.yaml
+testsetup/
+.idea/
+.idea_modules/
+*.iml
+*.ipr
+*.iws
+
+# nix
+env
+/dshackle-cli/node_modules/
+
+# temp files
+/test*
+/test/
+Test*.kt
+
+# http-client config
+http-client.env.json
